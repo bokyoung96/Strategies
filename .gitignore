@@ -1,3 +1,6 @@
+# Ignore large size datas
+/IntraTrading1/data
+
 # Ignore DS_Store
 .DS_Store
 ._.DS_Store
