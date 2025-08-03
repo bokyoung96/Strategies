@@ -1,5 +1,6 @@
 # Ignore large size datas
-/IntraTrading1/data
+DATA
+TR_SCHART
 
 # Ignore DS_Store
 .DS_Store
