@@ -9,5 +9,4 @@ from cpo1.main import get_upbit_new_listings
 from cpo1.market import Market
 
 if __name__ == "__main__":
-    data = get_upbit_new_listings(max_items=50, market_mode=Market.ALL)
-    print(json.dumps(data["summaries"], ensure_ascii=False, indent=2))
+    data = get_upbit_new_listings(max_items=30, market_mode=Market.ALL)
