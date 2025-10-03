@@ -1,12 +1,17 @@
 import re
-from typing import List
+import time
+from datetime import datetime
+from functools import cached_property
+from typing import Generator, List, Optional, Tuple
 
+import pandas as pd
 from cpo1.base import NoticeCrawler
 from cpo1.market import Market
-from cpo1.models import ListingEntry, NoticeSummary
+from cpo1.models import ListingDetail, ListingEntry, NoticeSummary
 from cpo1.session import ApiSession
 
 API_BASE = "https://api-manager.upbit.com/api/v1/announcements"
+DETAIL_API = "https://api-manager.upbit.com/api/v1/announcements/{id}"
 WEB_BASE = "https://upbit.com/service_center/notice?id="
 
 
@@ -15,10 +20,39 @@ class UpbitNoticeCrawler(NoticeCrawler):
     _RE_PAIR = re.compile(
         r"\((?P<ticker>[A-Z0-9\-]{2,15})\)\((?P<markets>[A-Z ,]+)\s*마켓\)"
     )
+    _RE_TICKERS = re.compile(r"\(([A-Z0-9\-]{2,15})\)")
 
-    def __init__(self, session: ApiSession, market_mode: Market = Market.KRW):
+    # NOTE: Listing detail patterns for trade open time
+    _RE_TRADE_ORIGINAL = re.compile(
+        r"(?:거래지원\s*개시\s*시점)[^\d]*(\d{4}[.\-]\d{2}[.\-]\d{2}[^\d]{0,3}\d{1,2}:\d{2})"
+    )
+    _RE_TRADE_UPDATED = re.compile(
+        r"(?:변경된|연기된)\s*거래지원\s*개시\s*시점[^\d]*(\d{4}[.\-]\d{2}[.\-]\d{2}[^\d]{0,3}\d{1,2}:\d{2})"
+    )
+    _RE_TRADE_PREV = re.compile(
+        r"기존\s*거래지원\s*개시\s*시점[^\d]*(\d{4}[.\-]\d{2}[.\-]\d{2}[^\d]{0,3}\d{1,2}:\d{2})"
+    )
+    _RE_TRADE_KR = re.compile(r"(\d{1,2})월\s*(\d{1,2})일\s*(\d{1,2})시")
+
+    def __init__(self, session: ApiSession, market_mode: Market = Market.KRW, limit: int = 50):
         self.session = session
         self.market_mode = market_mode
+        self.limit = limit
+
+    def _iter_notices(self, page_size: int = 20) -> Generator[dict, None, None]:
+        page = 1
+        while True:
+            data = self.session.get(API_BASE, params={
+                "os": "web",
+                "page": page,
+                "per_page": page_size,
+                "category": "trade",
+            })
+            notices = data["data"]["notices"]
+            if not notices:
+                break
+            yield from notices
+            page += 1
 
     def _extract_pairs(self, title: str) -> List[ListingEntry]:
         pairs: List[ListingEntry] = []
@@ -30,44 +64,100 @@ class UpbitNoticeCrawler(NoticeCrawler):
             pairs.append(ListingEntry(ticker=ticker, markets=markets))
 
         if not pairs:
-            tickers = re.findall(r"\(([A-Z0-9\-]{2,15})\)", title)
+            tickers = self._RE_TICKERS.findall(title)
             markets = Market.from_text(title, self.market_mode)
-            for t in tickers:
-                pairs.append(ListingEntry(ticker=t, markets=markets))
+            pairs = [ListingEntry(ticker=t, markets=markets) for t in tickers]
         return pairs
 
-    def iter_new_listings(self, limit: int = 50) -> List[NoticeSummary]:
+    def _get_year(self, month: str, day: str, hour: str, listed_at: Optional[str]) -> str:
+        try:
+            base_year = datetime.fromisoformat(
+                listed_at).year if listed_at else datetime.now().year
+            return f"{base_year}-{int(month):02d}-{int(day):02d} {int(hour):02d}:00"
+        except Exception:
+            return f"{month}월 {day}일 {hour}시"
+
+    def _extract_trade_times(self, text: str, listed_at: Optional[str]) -> Tuple[Optional[str], Optional[str]]:
+        trade_open_original, trade_open_updated = None, None
+
+        patterns = [
+            ("updated", self._RE_TRADE_UPDATED, None),
+            ("original", self._RE_TRADE_PREV, None),
+            ("original", self._RE_TRADE_ORIGINAL, None),
+            ("original", self._RE_TRADE_KR,
+             lambda m: self._get_year(m.group(1), m.group(2), m.group(3), listed_at)),
+        ]
+
+        for kind, regex, transform in patterns:
+            m = regex.search(text)
+            if m:
+                value = transform(m) if transform else m.group(1)
+                if kind == "updated":
+                    trade_open_updated = value
+                elif not trade_open_original:
+                    trade_open_original = value
+        return trade_open_original, trade_open_updated
+
+    @cached_property
+    def summaries(self) -> List[NoticeSummary]:
         results: List[NoticeSummary] = []
-        page = 1
-
-        while len(results) < limit:
-            data = self.session.get(API_BASE, params={
-                "os": "web",
-                "page": page,
-                "per_page": 20,
-                "category": "trade",
-            })
-            notices = data["data"]["notices"]
-            if not notices:
-                break
-
-            for n in notices:
-                title = n["title"]
-                if not self._RE_NEW_LISTING.search(title):
-                    continue
-
-                url = f"{WEB_BASE}{n['id']}"
-                listings = self._extract_pairs(title)
-
-                results.append(
-                    NoticeSummary(
-                        id=n["id"],
-                        title=title,
-                        url=url,
-                        listings=listings,
-                    )
+        for n in self._iter_notices():
+            if not self._RE_NEW_LISTING.search(n["title"]):
+                continue
+            results.append(
+                NoticeSummary(
+                    id=n["id"],
+                    title=n["title"],
+                    url=f"{WEB_BASE}{n['id']}",
+                    listings=self._extract_pairs(n["title"]),
                 )
-                if len(results) >= limit:
-                    break
-            page += 1
+            )
+            if len(results) >= self.limit:
+                break
         return results
+
+    @cached_property
+    def details(self) -> List[ListingDetail]:
+        return [self.fetch_detail(s.id, s) for s in self.summaries]
+
+    def fetch_detail(self, notice_id: int, hint: Optional[NoticeSummary] = None) -> ListingDetail:
+        url = DETAIL_API.format(id=notice_id)
+
+        # NOTE: To prevent from rate-limit overflow in crawling
+        time.sleep(0.3)
+        data = self.session.get(url)["data"]
+
+        content_html = data.get("body", "")
+        content_text = re.sub(r"<[^>]+>", "", content_html)
+
+        trade_open_original, trade_open_updated = self._extract_trade_times(
+            content_text, data.get("listed_at")
+        )
+
+        return ListingDetail(
+            id=data["id"],
+            title=data["title"],
+            url=hint.url if hint else f"{WEB_BASE}{data['id']}",
+            listings=hint.listings if hint else [],
+            trade_open_original=trade_open_original,
+            trade_open_updated=trade_open_updated,
+            content_text=content_text,
+            category=data.get("category"),
+            need_new_badge=data.get("need_new_badge"),
+            need_update_badge=data.get("need_update_badge"),
+            listed_at=data.get("listed_at"),
+            first_listed_at=data.get("first_listed_at"),
+        )
+
+    def crawled(self) -> pd.DataFrame:
+        rows = []
+        for d in self.details:
+            for entry in d.listings:
+                rows.append({
+                    "ticker": entry.ticker,
+                    "markets": ",".join(entry.markets),
+                    "trade_open_original": d.trade_open_original,
+                    "trade_open_updated": d.trade_open_updated,
+                    "trade_open": d.trade_open_updated or d.trade_open_original,
+                })
+        return pd.DataFrame(rows)

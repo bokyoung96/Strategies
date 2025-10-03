@@ -24,7 +24,14 @@ class ListingDetail:
     title: str
     url: str
     listings: List[ListingEntry]
-    trade_open_text: Optional[str]
-    deposit_open_text: Optional[str]
-    withdraw_open_text: Optional[str]
+
+    trade_open_original: Optional[str]
+    trade_open_updated: Optional[str]
+
     content_text: str
+
+    category: Optional[str] = None
+    need_new_badge: Optional[bool] = None
+    need_update_badge: Optional[bool] = None
+    listed_at: Optional[str] = None
+    first_listed_at: Optional[str] = None
