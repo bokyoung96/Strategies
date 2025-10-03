@@ -9,6 +9,7 @@ from cpo1.base import NoticeCrawler
 from cpo1.market import Market
 from cpo1.models import ListingDetail, ListingEntry, NoticeSummary
 from cpo1.session import ApiSession
+from tqdm import tqdm
 
 API_BASE = "https://api-manager.upbit.com/api/v1/announcements"
 DETAIL_API = "https://api-manager.upbit.com/api/v1/announcements/{id}"
@@ -34,14 +35,26 @@ class UpbitNoticeCrawler(NoticeCrawler):
     )
     _RE_TRADE_KR = re.compile(r"(\d{1,2})월\s*(\d{1,2})일\s*(\d{1,2})시")
 
-    def __init__(self, session: ApiSession, market_mode: Market = Market.KRW, limit: int = 50):
+    def __init__(
+        self,
+        session: ApiSession,
+        market_mode: Market = Market.KRW,
+        limit: int = 50,
+        start_page: int = 1,
+        end_page: Optional[int] = None,
+    ):
         self.session = session
         self.market_mode = market_mode
         self.limit = limit
+        self.start_page = start_page
+        self.end_page = end_page
 
     def _iter_notices(self, page_size: int = 20) -> Generator[dict, None, None]:
-        page = 1
+        page = self.start_page
         while True:
+            if self.end_page is not None and page > self.end_page:
+                break
+
             data = self.session.get(API_BASE, params={
                 "os": "web",
                 "page": page,
@@ -118,13 +131,16 @@ class UpbitNoticeCrawler(NoticeCrawler):
 
     @cached_property
     def details(self) -> List[ListingDetail]:
-        return [self.fetch_detail(s.id, s) for s in self.summaries]
+        results = []
+        for summary in tqdm(self.summaries, desc="Fetching details", unit="notice"):
+            results.append(self.fetch_detail(summary.id, summary))
+        return results
 
     def fetch_detail(self, notice_id: int, hint: Optional[NoticeSummary] = None) -> ListingDetail:
         url = DETAIL_API.format(id=notice_id)
 
-        # NOTE: To prevent from rate-limit overflow in crawling
-        time.sleep(0.3)
+        # NOTE: Rate-limit prevention
+        time.sleep(1.0)
         data = self.session.get(url)["data"]
 
         content_html = data.get("body", "")
