@@ -18,7 +18,7 @@ WEB_BASE = "https://upbit.com/service_center/notice?id="
 class UpbitNoticeCrawler(NoticeCrawler):
     _RE_NEW_LISTING = re.compile(r"신규\s*거래\s*지원")
     _RE_PAIR = re.compile(
-        r"\((?P<ticker>[A-Z0-9\-]{2,15})\)\((?P<markets>[A-Z ,]+)\s*마켓\)"
+        r"\((?P<ticker>[A-Z0-9\-]{2,15})\)[^()]*\((?P<markets>[^)]+)\s*마켓\)"
     )
     _RE_TICKERS = re.compile(r"\(([A-Z0-9\-]{2,15})\)")
 
