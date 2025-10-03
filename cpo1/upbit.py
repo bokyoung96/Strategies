@@ -11,13 +11,12 @@ from cpo1.models import ListingDetail, ListingEntry, NoticeSummary
 from cpo1.session import ApiSession
 from tqdm import tqdm
 
-API_BASE = "https://api-manager.upbit.com/api/v1/announcements"
+SEARCH_API = "https://api-manager.upbit.com/api/v1/announcements/search"
 DETAIL_API = "https://api-manager.upbit.com/api/v1/announcements/{id}"
 WEB_BASE = "https://upbit.com/service_center/notice?id="
 
 
 class UpbitNoticeCrawler(NoticeCrawler):
-    _RE_NEW_LISTING = re.compile(r"신규\s*거래\s*지원")
     _RE_PAIR = re.compile(
         r"\((?P<ticker>[A-Z0-9\-]{2,15})\)[^()]*\((?P<markets>[^)]+)\s*마켓\)"
     )
@@ -51,25 +50,34 @@ class UpbitNoticeCrawler(NoticeCrawler):
 
     def _iter_notices(self, page_size: int = 20) -> Generator[dict, None, None]:
         page = self.start_page
+        count = 0
+
         while True:
             if self.end_page is not None and page > self.end_page:
                 break
+            if count >= self.limit:
+                break
 
-            data = self.session.get(API_BASE, params={
+            data = self.session.get(SEARCH_API, params={
                 "os": "web",
                 "page": page,
                 "per_page": page_size,
-                "category": "trade",
+                "category": "all",
+                "search": "신규 거래지원",
             })
-            notices = data["data"]["notices"]
+            notices = data["data"]["list"]
             if not notices:
                 break
-            yield from notices
+
+            for n in notices:
+                yield n
+                count += 1
+                if count >= self.limit:
+                    return
             page += 1
 
     def _extract_pairs(self, title: str) -> List[ListingEntry]:
         pairs: List[ListingEntry] = []
-
         for m in self._RE_PAIR.finditer(title):
             ticker = m.group("ticker")
             markets = [s.strip().upper()
@@ -79,7 +87,7 @@ class UpbitNoticeCrawler(NoticeCrawler):
         if not pairs:
             tickers = self._RE_TICKERS.findall(title)
             markets = Market.from_text(title, self.market_mode)
-            pairs = [ListingEntry(ticker=t, markets=markets) for t in tickers]
+            pairs = [ListingEntry(t, markets) for t in tickers]
         return pairs
 
     def _get_year(self, month: str, day: str, hour: str, listed_at: Optional[str]) -> str:
@@ -115,8 +123,6 @@ class UpbitNoticeCrawler(NoticeCrawler):
     def summaries(self) -> List[NoticeSummary]:
         results: List[NoticeSummary] = []
         for n in self._iter_notices():
-            if not self._RE_NEW_LISTING.search(n["title"]):
-                continue
             results.append(
                 NoticeSummary(
                     id=n["id"],
@@ -125,8 +131,6 @@ class UpbitNoticeCrawler(NoticeCrawler):
                     listings=self._extract_pairs(n["title"]),
                 )
             )
-            if len(results) >= self.limit:
-                break
         return results
 
     @cached_property
@@ -137,12 +141,11 @@ class UpbitNoticeCrawler(NoticeCrawler):
         return results
 
     def fetch_detail(self, notice_id: int, hint: Optional[NoticeSummary] = None) -> ListingDetail:
+        # NOTE: To prevent from rate-limit overflow
         url = DETAIL_API.format(id=notice_id)
-
-        # NOTE: Rate-limit prevention
         time.sleep(1.0)
-        data = self.session.get(url)["data"]
 
+        data = self.session.get(url)["data"]
         content_html = data.get("body", "")
         content_text = re.sub(r"<[^>]+>", "", content_html)
 

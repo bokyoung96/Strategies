@@ -1,3 +1,6 @@
+# Ignore cpo1 datas
+upbit_listings
+
 # Ignore large size datas
 DATA
 TR_SCHART
