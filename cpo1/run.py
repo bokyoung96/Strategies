@@ -8,7 +8,7 @@ from cpo1.main import get_upbit_new_listings
 from cpo1.market import Market
 
 if __name__ == "__main__":
-    data = get_upbit_new_listings(limit=30,
+    data = get_upbit_new_listings(limit=100,
                                   market_mode=Market.ALL,
                                   start_page=1,
                                   end_page=None)

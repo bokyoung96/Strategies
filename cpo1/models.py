@@ -8,6 +8,7 @@ from typing import List, Optional
 class ListingEntry:
     ticker: str
     markets: List[str]
+    trade_open: Optional[str] = None
 
 
 @dataclass(frozen=True)
