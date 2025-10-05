@@ -1,5 +1,7 @@
 # Ignore cpo1 datas
 upbit_listings
+prices
+events
 
 # Ignore large size datas
 DATA
